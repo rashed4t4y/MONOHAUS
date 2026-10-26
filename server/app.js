@@ -1,0 +1,55 @@
+import express from 'express';
+import session from 'express-session';
+import helmet from 'helmet';
+import { rateLimit } from 'express-rate-limit';
+import { randomBytes } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
+import { existsSync } from 'node:fs';
+import { openDatabase } from './db.js';
+import { SQLiteSessionStore } from './lib/session-store.js';
+import { sessionUser, csrfProtection } from './lib/security.js';
+import { errorHandler, assert } from './lib/errors.js';
+import { text, validEmail } from './lib/validation.js';
+import { authRoutes } from './routes/auth.js';
+import { productRoutes } from './routes/products.js';
+import { adminRoutes } from './routes/admin.js';
+import { shoppingRoutes } from './routes/shopping.js';
+export function createApp(options = {}) {
+  const production = options.production ?? process.env.NODE_ENV === 'production';
+  const secret = options.sessionSecret || process.env.SESSION_SECRET;
+  if (production && (!secret || secret.length < 32)) throw new Error('Production requires SESSION_SECRET with at least 32 random characters.');
+  const origin = options.origin || process.env.APP_ORIGIN;
+  if (production && (!origin || !origin.startsWith('https://'))) throw new Error('Production requires APP_ORIGIN to be the HTTPS storefront origin.');
+  const db = options.db || openDatabase(options.databasePath);
+  const app = express();
+  app.disable('x-powered-by');
+  if (process.env.TRUST_PROXY === '1') app.set('trust proxy',1);
+  app.use(helmet({ contentSecurityPolicy: { directives: { defaultSrc:["'self'"], scriptSrc:["'self'"], styleSrc:["'self'","'unsafe-inline'"], imgSrc:["'self'",'data:'], fontSrc:["'self'"], connectSrc:["'self'"], objectSrc:["'none'"], frameAncestors:["'none'"], upgradeInsecureRequests:production ? [] : null } }, strictTransportSecurity:production ? undefined : false }));
+  app.use(express.json({ limit:'32kb',strict:true }));
+  const store = new SQLiteSessionStore(db);
+  app.use('/api',session({ name:'monohaus.sid', secret:secret || randomBytes(48).toString('hex'), store, resave:false, saveUninitialized:false, rolling:true, cookie:{ httpOnly:true,sameSite:'lax',secure:production,maxAge:24*60*60*1000,path:'/' } }));
+  app.use('/api',(req,res,next) => { res.set('Cache-Control','no-store'); next(); });
+  app.use('/api',sessionUser(db));
+  app.use('/api',csrfProtection({ production,origin }));
+  app.get('/api/health',(req,res) => res.json({ status:'ok',store:'MONOHAUS' }));
+  app.use('/api/auth',authRoutes(db,options));
+  app.use('/api/products',productRoutes(db));
+  app.post('/api/newsletter',rateLimit({ windowMs:3600000,limit:10,standardHeaders:'draft-8',legacyHeaders:false,message:{error:'Please try subscribing again later.'} }),(req,res) => {
+    const email = text(req.body?.email).toLowerCase();
+    assert(validEmail(email),422,'Enter a valid email address.',{email:'Enter a valid email address.'});
+    db.prepare('INSERT OR IGNORE INTO newsletter(email) VALUES(?)').run(email);
+    res.json({ success:true,demo:true,message:'Saved to this local demo. No email will be sent.' });
+  });
+  app.use('/api/admin',adminRoutes(db));
+  app.use('/api',shoppingRoutes(db));
+  app.use('/api',(req,res) => res.status(404).json({error:'This API endpoint does not exist.'}));
+  const clientPath = fileURLToPath(new URL('../client/dist/',import.meta.url));
+  if (existsSync(`${clientPath}/index.html`)) {
+    app.use(express.static(clientPath,{index:false,maxAge:production ? '1h' : 0}));
+    app.get('/{*path}',(req,res) => res.sendFile(`${clientPath}/index.html`));
+  } else app.get('/',(req,res) => res.json({message:'MONOHAUS API is running. Open the Vite frontend on http://localhost:5173, or run npm run build.'}));
+  app.use(errorHandler);
+  app.locals.db = db;
+  app.locals.close = () => { store.close(); if (!options.db) db.close(); };
+  return app;
+}
