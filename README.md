@@ -174,7 +174,6 @@ Products, contact details, policy copy, and commercial arrangements are fictiona
 Cash on delivery is the only demonstration payment method. Orders are real local records, but no payment is collected, courier booked, email sent, or goods dispatched. The newsletter explicitly reports that no email will be sent. There is no external email provider, password reset, email verification, or real fulfillment integration. Configure genuine inventory, policies, payment/fulfillment operations, and operational controls before using this as a live store.
 
 
-## Running in this Codex workspace
 
 The Node executable is available, but the standard npm launcher was not on PATH during implementation. Dependencies are already installed in this workspace, so start it directly:
 
